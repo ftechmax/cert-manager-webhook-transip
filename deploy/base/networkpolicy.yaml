@@ -1,0 +1,38 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: transip-webhook
+  namespace: cert-manager
+spec:
+  podSelector:
+    matchLabels:
+      app: transip-webhook
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The kube-apiserver (via the APIService) and kubelet probes. Their source
+    # IPs are host addresses that can't be selected portably, so only the port
+    # is restricted.
+    - ports:
+        - protocol: TCP
+          port: 8443
+  egress:
+    # Cluster DNS. Selects the namespace only: a podSelector here would get
+    # the kustomize common label injected and stop matching CoreDNS.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Kubernetes API (443 via the service, 6443 after DNAT on k3s/kubeadm)
+    # and the TransIP API (https://api.transip.nl)
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443

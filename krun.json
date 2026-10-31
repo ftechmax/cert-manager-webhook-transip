@@ -1,0 +1,8 @@
+[
+    {
+        "name": "cert-manager-webhook-transip",
+        "path": ".",
+        "dockerfile": ".",
+        "context": "."
+    }
+]

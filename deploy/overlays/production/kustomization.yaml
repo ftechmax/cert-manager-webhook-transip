@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - name: registry:5000/cert-manager-webhook-transip
+    newTag: latest
+
+configMapGenerator:
+  - name: transip-webhook-config
+    namespace: cert-manager
+    envs:
+      - config.env
+    options:
+      disableNameSuffixHash: true
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: transip-webhook-config
+      fieldPath: data.email
+    targets:
+      - select:
+          kind: ClusterIssuer
+        fieldPaths:
+          - spec.acme.email

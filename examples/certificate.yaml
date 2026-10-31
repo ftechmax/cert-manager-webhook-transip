@@ -1,0 +1,13 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: yourdomain-nl
+  namespace: istio-ingress
+spec:
+  secretName: yourdomain-nl-tls
+  issuerRef:
+    name: letsencrypt-staging
+    kind: ClusterIssuer
+  dnsNames:
+    - yourdomain.nl
+    - "*.yourdomain.nl"

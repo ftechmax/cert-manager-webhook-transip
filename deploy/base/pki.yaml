@@ -1,0 +1,48 @@
+# Bootstrap self-signed issuer
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: transip-webhook-selfsign
+  namespace: cert-manager
+spec:
+  selfSigned: {}
+---
+# Root CA certificate
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: transip-webhook-ca
+  namespace: cert-manager
+spec:
+  secretName: transip-webhook-ca
+  duration: 43800h # 5 years
+  issuerRef:
+    name: transip-webhook-selfsign
+  commonName: "transip-webhook-ca"
+  isCA: true
+---
+# CA issuer using the root CA
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: transip-webhook-ca
+  namespace: cert-manager
+spec:
+  ca:
+    secretName: transip-webhook-ca
+---
+# Serving certificate for the webhook
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: transip-webhook-tls
+  namespace: cert-manager
+spec:
+  secretName: transip-webhook-tls
+  duration: 8760h # 1 year
+  issuerRef:
+    name: transip-webhook-ca
+  dnsNames:
+    - transip-webhook
+    - transip-webhook.cert-manager
+    - transip-webhook.cert-manager.svc
