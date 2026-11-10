@@ -33,3 +33,10 @@ go.work.sum
 
 # other
 *.key
+
+# Build output
+/webhook
+
+# Deployment-specific settings and test credentials
+deploy/overlays/production/settings.yaml
+testdata/transip/secret.yaml

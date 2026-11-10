@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/cmd"
@@ -20,22 +22,49 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const (
+	defaultTTL            = 300
+	minTTL                = 60
+	defaultPrivateKeyKey  = "privateKey"
+	defaultAccountNameKey = "accountName"
+
+	apiTimeout = 30 * time.Second
+)
+
 var GroupName = os.Getenv("GROUP_NAME")
 
 func main() {
 	if GroupName == "" {
 		panic("GROUP_NAME must be specified")
 	}
-	cmd.RunWebhookServer(GroupName, &transipDNSProviderSolver{})
+	cmd.RunWebhookServer(GroupName, newSolver())
+}
+
+type dnsRepository interface {
+	GetDNSEntries(domainName string) ([]domain.DNSEntry, error)
+	AddDNSEntry(domainName string, entry domain.DNSEntry) error
+	RemoveDNSEntry(domainName string, entry domain.DNSEntry) error
 }
 
 type transipDNSProviderSolver struct {
-	client kubernetes.Interface
+	client  kubernetes.Interface
+	newRepo func(accountName string, privateKey []byte) (dnsRepository, error)
+}
+
+func newSolver() *transipDNSProviderSolver {
+	return &transipDNSProviderSolver{newRepo: newTransipRepo}
 }
 
 type transipDNSProviderConfig struct {
-	TTL                 int                       `json:"ttl"`
-	PrivateKeySecretRef corev1.SecretKeySelector  `json:"privateKeySecretRef"`
+	TTL                 int                      `json:"ttl"`
+	PrivateKeySecretRef corev1.SecretKeySelector `json:"privateKeySecretRef"`
+	AccountNameKey      string                   `json:"accountNameKey"`
+}
+
+type challenge struct {
+	repo       dnsRepository
+	domainName string
+	entry      domain.DNSEntry
 }
 
 func (s *transipDNSProviderSolver) Name() string {
@@ -52,132 +81,165 @@ func (s *transipDNSProviderSolver) Initialize(kubeClientConfig *rest.Config, sto
 }
 
 func (s *transipDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error {
-	cfg, err := loadConfig(ch.Config)
+	c, err := s.prepare(ch)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return err
 	}
 
-	repo, err := s.newDomainRepo(cfg, ch.ResourceNamespace)
+	entries, err := c.repo.GetDNSEntries(c.domainName)
 	if err != nil {
-		return fmt.Errorf("creating transip client: %w", err)
+		return fmt.Errorf("listing dns entries for %s: %w", c.domainName, err)
+	}
+	if _, found := c.find(entries); found {
+		klog.Infof("TXT record %s already exists for %s, skipping", c.entry.Name, c.domainName)
+		return nil
 	}
 
-	domainName := extractDomainName(ch.ResolvedZone)
-	recordName := extractRecordName(ch.ResolvedFQDN, domainName)
-	ttl := cfg.TTL
-	if ttl == 0 {
-		ttl = 300
-	}
-
-	entry := domain.DNSEntry{
-		Name:    recordName,
-		Expire:  ttl,
-		Type:    "TXT",
-		Content: ch.Key,
-	}
-
-	// Check if the record already exists (idempotent)
-	entries, err := repo.GetDNSEntries(domainName)
-	if err != nil {
-		return fmt.Errorf("listing dns entries for %s: %w", domainName, err)
-	}
-	for _, e := range entries {
-		if e.Name == recordName && e.Type == "TXT" && e.Content == ch.Key {
-			klog.Infof("TXT record %s already exists for %s, skipping", recordName, domainName)
-			return nil
-		}
-	}
-
-	klog.Infof("Creating TXT record %s for %s", recordName, domainName)
-	if err := repo.AddDNSEntry(domainName, entry); err != nil {
+	klog.Infof("Creating TXT record %s for %s", c.entry.Name, c.domainName)
+	if err := c.repo.AddDNSEntry(c.domainName, c.entry); err != nil {
 		return fmt.Errorf("adding dns entry: %w", err)
 	}
 	return nil
 }
 
 func (s *transipDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
-	cfg, err := loadConfig(ch.Config)
+	c, err := s.prepare(ch)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return err
 	}
 
-	repo, err := s.newDomainRepo(cfg, ch.ResourceNamespace)
+	entries, err := c.repo.GetDNSEntries(c.domainName)
 	if err != nil {
-		return fmt.Errorf("creating transip client: %w", err)
+		return fmt.Errorf("listing dns entries for %s: %w", c.domainName, err)
+	}
+	entry, found := c.find(entries)
+	if !found {
+		klog.Infof("TXT record %s not found for %s, nothing to clean up", c.entry.Name, c.domainName)
+		return nil
 	}
 
-	domainName := extractDomainName(ch.ResolvedZone)
-	recordName := extractRecordName(ch.ResolvedFQDN, domainName)
-
-	entries, err := repo.GetDNSEntries(domainName)
-	if err != nil {
-		return fmt.Errorf("listing dns entries for %s: %w", domainName, err)
+	klog.Infof("Removing TXT record %s from %s", c.entry.Name, c.domainName)
+	if err := c.repo.RemoveDNSEntry(c.domainName, entry); err != nil {
+		return fmt.Errorf("removing dns entry: %w", err)
 	}
-
-	for _, e := range entries {
-		if e.Name == recordName && e.Type == "TXT" && e.Content == ch.Key {
-			klog.Infof("Removing TXT record %s from %s", recordName, domainName)
-			if err := repo.RemoveDNSEntry(domainName, e); err != nil {
-				return fmt.Errorf("removing dns entry: %w", err)
-			}
-			return nil
-		}
-	}
-
-	klog.Infof("TXT record %s not found for %s, nothing to clean up", recordName, domainName)
 	return nil
 }
 
-func (s *transipDNSProviderSolver) newDomainRepo(cfg transipDNSProviderConfig, namespace string) (domain.Repository, error) {
-	secret, err := s.client.CoreV1().Secrets(namespace).Get(context.Background(), cfg.PrivateKeySecretRef.Name, metav1.GetOptions{})
+// Match the key as well as the name so apex and wildcard challenges can coexist.
+func (c challenge) find(entries []domain.DNSEntry) (domain.DNSEntry, bool) {
+	for _, e := range entries {
+		if strings.EqualFold(e.Name, c.entry.Name) && e.Type == c.entry.Type && e.Content == c.entry.Content {
+			return e, true
+		}
+	}
+	return domain.DNSEntry{}, false
+}
+
+func (s *transipDNSProviderSolver) prepare(ch *v1alpha1.ChallengeRequest) (challenge, error) {
+	cfg, err := loadConfig(ch.Config)
 	if err != nil {
-		return domain.Repository{}, fmt.Errorf("reading secret %s/%s: %w", namespace, cfg.PrivateKeySecretRef.Name, err)
+		return challenge{}, fmt.Errorf("loading config: %w", err)
 	}
 
-	key := cfg.PrivateKeySecretRef.Key
-	if key == "" {
-		key = "privateKey"
-	}
-	privateKey, ok := secret.Data[key]
-	if !ok {
-		return domain.Repository{}, fmt.Errorf("key %q not found in secret %s/%s", key, namespace, cfg.PrivateKeySecretRef.Name)
+	domainName, recordName, err := splitFQDN(ch.ResolvedFQDN, ch.ResolvedZone)
+	if err != nil {
+		return challenge{}, err
 	}
 
-	accountName := string(secret.Data["accountName"])
+	accountName, privateKey, err := s.loadCredentials(cfg, ch.ResourceNamespace)
+	if err != nil {
+		return challenge{}, err
+	}
+
+	repo, err := s.newRepo(accountName, privateKey)
+	if err != nil {
+		return challenge{}, fmt.Errorf("creating transip client: %w", err)
+	}
+
+	return challenge{
+		repo:       repo,
+		domainName: domainName,
+		entry: domain.DNSEntry{
+			Name:    recordName,
+			Expire:  cfg.TTL,
+			Type:    "TXT",
+			Content: ch.Key,
+		},
+	}, nil
+}
+
+func (s *transipDNSProviderSolver) loadCredentials(cfg transipDNSProviderConfig, namespace string) (accountName string, privateKey []byte, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancel()
+
+	name := cfg.PrivateKeySecretRef.Name
+	secret, err := s.client.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", nil, fmt.Errorf("reading secret %s/%s: %w", namespace, name, err)
+	}
+
+	privateKey = secret.Data[cfg.PrivateKeySecretRef.Key]
+	if len(privateKey) == 0 {
+		return "", nil, fmt.Errorf("key %q not found in secret %s/%s", cfg.PrivateKeySecretRef.Key, namespace, name)
+	}
+	accountName = string(secret.Data[cfg.AccountNameKey])
 	if accountName == "" {
-		return domain.Repository{}, fmt.Errorf("key \"accountName\" not found in secret %s/%s", namespace, cfg.PrivateKeySecretRef.Name)
+		return "", nil, fmt.Errorf("key %q not found in secret %s/%s", cfg.AccountNameKey, namespace, name)
 	}
+	return accountName, privateKey, nil
+}
 
+var transipHTTPClient = &http.Client{Timeout: apiTimeout}
+
+func newTransipRepo(accountName string, privateKey []byte) (dnsRepository, error) {
 	client, err := gotransip.NewClient(gotransip.ClientConfiguration{
 		AccountName:      accountName,
 		PrivateKeyReader: bytes.NewReader(privateKey),
+		HTTPClient:       transipHTTPClient,
 	})
 	if err != nil {
-		return domain.Repository{}, fmt.Errorf("creating gotransip client: %w", err)
+		return nil, err
 	}
-
-	return domain.Repository{Client: client}, nil
+	return &domain.Repository{Client: client}, nil
 }
 
 func loadConfig(cfgJSON *extapi.JSON) (transipDNSProviderConfig, error) {
 	cfg := transipDNSProviderConfig{}
-	if cfgJSON == nil {
-		return cfg, nil
+	if cfgJSON != nil {
+		if err := json.Unmarshal(cfgJSON.Raw, &cfg); err != nil {
+			return cfg, fmt.Errorf("unmarshalling solver config: %w", err)
+		}
 	}
-	if err := json.Unmarshal(cfgJSON.Raw, &cfg); err != nil {
-		return cfg, fmt.Errorf("unmarshalling solver config: %w", err)
+
+	if cfg.TTL == 0 {
+		cfg.TTL = defaultTTL
+	}
+	if cfg.PrivateKeySecretRef.Key == "" {
+		cfg.PrivateKeySecretRef.Key = defaultPrivateKeyKey
+	}
+	if cfg.AccountNameKey == "" {
+		cfg.AccountNameKey = defaultAccountNameKey
+	}
+
+	if cfg.PrivateKeySecretRef.Name == "" {
+		return cfg, fmt.Errorf("privateKeySecretRef.name must be set")
+	}
+	if cfg.TTL < minTTL {
+		return cfg, fmt.Errorf("ttl must be at least %d seconds, got %d", minTTL, cfg.TTL)
 	}
 	return cfg, nil
 }
 
-func extractDomainName(zone string) string {
-	return strings.TrimSuffix(zone, ".")
-}
+// splitFQDN splits a challenge FQDN into the TransIP domain name and the
+// record name relative to it, e.g. "_acme-challenge.www.example.nl." in zone
+// "example.nl." gives ("example.nl", "_acme-challenge.www").
+func splitFQDN(fqdn, zone string) (domainName, recordName string, err error) {
+	domainName = strings.ToLower(strings.TrimSuffix(zone, "."))
+	fqdn = strings.ToLower(strings.TrimSuffix(fqdn, "."))
 
-func extractRecordName(fqdn, domainName string) string {
-	fqdn = strings.TrimSuffix(fqdn, ".")
-	if name, ok := strings.CutSuffix(fqdn, "."+domainName); ok {
-		return name
+	recordName, ok := strings.CutSuffix(fqdn, "."+domainName)
+	if !ok || domainName == "" || recordName == "" {
+		return "", "", fmt.Errorf("fqdn %q is not a name inside zone %q", fqdn, zone)
 	}
-	return fqdn
+	return domainName, recordName, nil
 }

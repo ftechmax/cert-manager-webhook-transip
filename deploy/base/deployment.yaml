@@ -14,16 +14,20 @@ spec:
         app: transip-webhook
     spec:
       serviceAccountName: transip-webhook
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: webhook
-          image: registry:5000/cert-manager-webhook-transip:latest
+          image: IMAGE
           args:
             - --tls-cert-file=/tls/tls.crt
             - --tls-private-key-file=/tls/tls.key
             - --secure-port=8443
           env:
             - name: GROUP_NAME
-              value: acme.transip.nl
+              value: acme.ftechmax.net
           securityContext:
             runAsNonRoot: true
             allowPrivilegeEscalation: false

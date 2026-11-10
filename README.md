@@ -1,23 +1,14 @@
 # cert-manager webhook solver for TransIP
 
-A [cert-manager](https://cert-manager.io/) ACME DNS01 webhook solver for [TransIP](https://www.transip.nl/) domains. Automates Let's Encrypt certificate provisioning by creating DNS TXT records via the TransIP REST API.
+A [cert-manager](https://cert-manager.io/) DNS01 webhook solver for issuing Let's Encrypt certificates for [TransIP](https://www.transip.nl/) domains.
 
-## Prerequisites
+## Install
 
-- Kubernetes cluster with cert-manager installed
-- TransIP account with API access enabled
-- TransIP RSA private key (generated in the [TransIP control panel](https://www.transip.nl/cp/account/api/))
+Requires Kubernetes with cert-manager installed and a TransIP account with API access enabled.
 
-## Build
+### 1. Create credentials
 
-```bash
-make build             # build binary locally
-make docker-build # build and push container image
-```
-
-## Deploy
-
-### 1. Create the TransIP credentials secret
+Generate an API key pair in the [TransIP control panel](https://www.transip.nl/cp/account/api/) with **"Only accept IP addresses from the whitelist" turned off**. The webhook requests tokens usable from any IP; whitelisted keys reject these requests.
 
 ```bash
 kubectl -n cert-manager create secret generic transip-credentials \
@@ -25,77 +16,59 @@ kubectl -n cert-manager create secret generic transip-credentials \
   --from-literal=accountName=your-transip-username
 ```
 
-### 2. Set your ACME email
+If you rename the secret, update `resourceNames` in [secret-rbac.yaml](deploy/base/secret-rbac.yaml) and the solver's `privateKeySecretRef.name` in [clusterissuer.yaml](deploy/base/clusterissuer.yaml).
 
-Edit `config.env` in the overlay you deploy (`deploy/overlays/local` or `deploy/overlays/production`):
+### 2. Configure
 
-```
-email=you@example.com
-```
+Set `email` (Let's Encrypt contact) and `image` (full container image reference) in `deploy/overlays/local/settings.yaml`.
 
-### 3. Apply
+For production, copy `deploy/overlays/production/settings.example.yaml` to `settings.yaml` in the same directory and edit it. Production settings are git-ignored.
 
-```bash
-make deploy               # local overlay, ~/.kube/config
-make deploy PRODUCTION=1  # production overlay, ~/.kube/prd
-```
-
-### 4. Verify
+### 3. Deploy
 
 ```bash
-# Webhook pod should be Running
-kubectl -n cert-manager get pods -l app=transip-webhook
-
-# APIService should be Available
-kubectl get apiservice v1alpha1.acme.transip.nl
+kubectl apply -k deploy/overlays/local
+# Or:
+kubectl apply -k deploy/overlays/production
 ```
+
+This creates two ClusterIssuers: `letsencrypt-transip-staging` and `letsencrypt-transip-production`.
 
 ## Usage
 
-### Standalone Certificate
+Save as `certificate.yaml`, replacing the domain and namespace:
 
 ```yaml
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: my-cert
-  namespace: istio-ingress
+  namespace: default
 spec:
   secretName: my-cert-tls
   issuerRef:
-    name: letsencrypt-staging # switch to letsencrypt-production once verified
+    name: letsencrypt-transip-staging
     kind: ClusterIssuer
   dnsNames:
     - example.nl
     - "*.example.nl"
 ```
 
-### With Istio Gateway API
-
-Add the `cert-manager.io/cluster-issuer` annotation to your Gateway and add HTTPS listeners — cert-manager will automatically create Certificate resources for each listener:
-
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: gateway
-  namespace: istio-ingress
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-production
-spec:
-  gatewayClassName: istio
-  listeners:
-    - name: https
-      hostname: "example.nl"
-      port: 443
-      protocol: HTTPS
-      tls:
-        mode: Terminate
-        certificateRefs:
-          - name: example-nl-tls
-      allowedRoutes:
-        namespaces:
-          from: All
+```bash
+kubectl apply -f certificate.yaml
 ```
 
-See `examples/` for more complete examples.
+Once issuance works, change `issuerRef.name` to `letsencrypt-transip-production` and apply again. The certificate and private key are stored in `my-cert-tls` in the Certificate's namespace.
+
+## Solver configuration
+
+Options in the webhook solver's `config` block in [clusterissuer.yaml](deploy/base/clusterissuer.yaml):
+
+| Field | Default | Description |
+| ----- | ------- | ----------- |
+| `privateKeySecretRef.name` | Required | Credentials secret name |
+| `privateKeySecretRef.key` | `privateKey` | Secret key containing the PEM private key |
+| `accountNameKey` | `accountName` | Secret key containing the TransIP account name |
+| `ttl` | `300` | TXT record TTL in seconds; minimum 60 |
+
+ClusterIssuers use credentials in `cert-manager`. Namespaced Issuers need credentials in their own namespace and a Role and RoleBinding granting the webhook `get` on that secret.

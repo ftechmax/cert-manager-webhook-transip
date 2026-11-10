@@ -1,4 +1,3 @@
-# Bootstrap self-signed issuer
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
@@ -7,7 +6,6 @@ metadata:
 spec:
   selfSigned: {}
 ---
-# Root CA certificate
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -21,7 +19,6 @@ spec:
   commonName: "transip-webhook-ca"
   isCA: true
 ---
-# CA issuer using the root CA
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
@@ -31,7 +28,6 @@ spec:
   ca:
     secretName: transip-webhook-ca
 ---
-# Serving certificate for the webhook
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

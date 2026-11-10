@@ -1,11 +1,11 @@
 apiVersion: apiregistration.k8s.io/v1
 kind: APIService
 metadata:
-  name: v1alpha1.acme.transip.nl
+  name: v1alpha1.acme.ftechmax.net
   annotations:
     cert-manager.io/inject-ca-from: cert-manager/transip-webhook-ca
 spec:
-  group: acme.transip.nl
+  group: acme.ftechmax.net
   groupPriorityMinimum: 1000
   versionPriority: 15
   service:

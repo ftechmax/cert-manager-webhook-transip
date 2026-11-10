@@ -1,10 +1,10 @@
-module github.com/nielsf/cert-manager-webhook-transip
+module github.com/ftechmax/cert-manager-webhook-transip
 
 go 1.27.3
 
 require (
 	github.com/cert-manager/cert-manager v1.21.3
-	github.com/transip/gotransip/v6 v6.28.0
+	github.com/transip/gotransip/v6 v6.29.0
 	k8s.io/api v0.37.2
 	k8s.io/apiextensions-apiserver v0.37.2
 	k8s.io/apimachinery v0.37.2

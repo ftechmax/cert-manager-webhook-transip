@@ -1,0 +1,10 @@
+# local-config keeps these settings out of the applied manifests.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: transip-webhook-settings
+  annotations:
+    config.kubernetes.io/local-config: "true"
+data:
+  email: you@example.com
+  image: registry:5000/cert-manager-webhook-transip:latest
