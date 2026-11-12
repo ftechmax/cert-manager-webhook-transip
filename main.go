@@ -31,13 +31,12 @@ const (
 	apiTimeout = 30 * time.Second
 )
 
-var GroupName = os.Getenv("GROUP_NAME")
-
 func main() {
-	if GroupName == "" {
+	groupName := os.Getenv("GROUP_NAME")
+	if groupName == "" {
 		panic("GROUP_NAME must be specified")
 	}
-	cmd.RunWebhookServer(GroupName, newSolver())
+	cmd.RunWebhookServer(groupName, &transipSolver{newRepo: newTransipRepo})
 }
 
 type dnsRepository interface {
@@ -46,16 +45,12 @@ type dnsRepository interface {
 	RemoveDNSEntry(domainName string, entry domain.DNSEntry) error
 }
 
-type transipDNSProviderSolver struct {
+type transipSolver struct {
 	client  kubernetes.Interface
 	newRepo func(accountName string, privateKey []byte) (dnsRepository, error)
 }
 
-func newSolver() *transipDNSProviderSolver {
-	return &transipDNSProviderSolver{newRepo: newTransipRepo}
-}
-
-type transipDNSProviderConfig struct {
+type solverConfig struct {
 	TTL                 int                      `json:"ttl"`
 	PrivateKeySecretRef corev1.SecretKeySelector `json:"privateKeySecretRef"`
 	AccountNameKey      string                   `json:"accountNameKey"`
@@ -67,20 +62,20 @@ type challenge struct {
 	entry      domain.DNSEntry
 }
 
-func (s *transipDNSProviderSolver) Name() string {
+func (s *transipSolver) Name() string {
 	return "transip"
 }
 
-func (s *transipDNSProviderSolver) Initialize(kubeClientConfig *rest.Config, stopCh <-chan struct{}) error {
-	cl, err := kubernetes.NewForConfig(kubeClientConfig)
+func (s *transipSolver) Initialize(kubeClientConfig *rest.Config, _ <-chan struct{}) error {
+	client, err := kubernetes.NewForConfig(kubeClientConfig)
 	if err != nil {
 		return err
 	}
-	s.client = cl
+	s.client = client
 	return nil
 }
 
-func (s *transipDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error {
+func (s *transipSolver) Present(ch *v1alpha1.ChallengeRequest) error {
 	c, err := s.prepare(ch)
 	if err != nil {
 		return err
@@ -102,7 +97,7 @@ func (s *transipDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error 
 	return nil
 }
 
-func (s *transipDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
+func (s *transipSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
 	c, err := s.prepare(ch)
 	if err != nil {
 		return err
@@ -135,7 +130,7 @@ func (c challenge) find(entries []domain.DNSEntry) (domain.DNSEntry, bool) {
 	return domain.DNSEntry{}, false
 }
 
-func (s *transipDNSProviderSolver) prepare(ch *v1alpha1.ChallengeRequest) (challenge, error) {
+func (s *transipSolver) prepare(ch *v1alpha1.ChallengeRequest) (challenge, error) {
 	cfg, err := loadConfig(ch.Config)
 	if err != nil {
 		return challenge{}, fmt.Errorf("loading config: %w", err)
@@ -168,7 +163,7 @@ func (s *transipDNSProviderSolver) prepare(ch *v1alpha1.ChallengeRequest) (chall
 	}, nil
 }
 
-func (s *transipDNSProviderSolver) loadCredentials(cfg transipDNSProviderConfig, namespace string) (accountName string, privateKey []byte, err error) {
+func (s *transipSolver) loadCredentials(cfg solverConfig, namespace string) (accountName string, privateKey []byte, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
 	defer cancel()
 
@@ -203,8 +198,8 @@ func newTransipRepo(accountName string, privateKey []byte) (dnsRepository, error
 	return &domain.Repository{Client: client}, nil
 }
 
-func loadConfig(cfgJSON *extapi.JSON) (transipDNSProviderConfig, error) {
-	cfg := transipDNSProviderConfig{}
+func loadConfig(cfgJSON *extapi.JSON) (solverConfig, error) {
+	cfg := solverConfig{}
 	if cfgJSON != nil {
 		if err := json.Unmarshal(cfgJSON.Raw, &cfg); err != nil {
 			return cfg, fmt.Errorf("unmarshalling solver config: %w", err)
@@ -230,9 +225,7 @@ func loadConfig(cfgJSON *extapi.JSON) (transipDNSProviderConfig, error) {
 	return cfg, nil
 }
 
-// splitFQDN splits a challenge FQDN into the TransIP domain name and the
-// record name relative to it, e.g. "_acme-challenge.www.example.nl." in zone
-// "example.nl." gives ("example.nl", "_acme-challenge.www").
+// splitFQDN returns the TransIP domain and the record name relative to it.
 func splitFQDN(fqdn, zone string) (domainName, recordName string, err error) {
 	domainName = strings.ToLower(strings.TrimSuffix(zone, "."))
 	fqdn = strings.ToLower(strings.TrimSuffix(fqdn, "."))

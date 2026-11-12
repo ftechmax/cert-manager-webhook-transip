@@ -52,13 +52,13 @@ func TestLoadConfig(t *testing.T) {
 	tests := []struct {
 		name    string
 		json    string // empty means no config at all
-		want    transipDNSProviderConfig
+		want    solverConfig
 		wantErr string
 	}{
 		{
 			name: "defaults",
 			json: `{"privateKeySecretRef":{"name":"creds"}}`,
-			want: transipDNSProviderConfig{
+			want: solverConfig{
 				TTL:                 300,
 				PrivateKeySecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "creds"}, Key: "privateKey"},
 				AccountNameKey:      "accountName",
@@ -67,7 +67,7 @@ func TestLoadConfig(t *testing.T) {
 		{
 			name: "all fields set",
 			json: `{"ttl":3600,"privateKeySecretRef":{"name":"creds","key":"pem"},"accountNameKey":"user"}`,
-			want: transipDNSProviderConfig{
+			want: solverConfig{
 				TTL:                 3600,
 				PrivateKeySecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "creds"}, Key: "pem"},
 				AccountNameKey:      "user",
@@ -146,7 +146,7 @@ func (r *fakeRepo) txtRecords(domainName, name string) []string {
 
 const testNamespace = "cert-manager"
 
-func newTestSolver(t *testing.T, secretData map[string][]byte) (*transipDNSProviderSolver, *fakeRepo) {
+func newTestSolver(t *testing.T, secretData map[string][]byte) (*transipSolver, *fakeRepo) {
 	t.Helper()
 	repo := &fakeRepo{entries: map[string][]domain.DNSEntry{
 		"example.nl": {{Name: "www", Expire: 3600, Type: "A", Content: "192.0.2.1"}},
@@ -155,7 +155,7 @@ func newTestSolver(t *testing.T, secretData map[string][]byte) (*transipDNSProvi
 		ObjectMeta: metav1.ObjectMeta{Name: "transip-credentials", Namespace: testNamespace},
 		Data:       secretData,
 	}
-	s := &transipDNSProviderSolver{
+	s := &transipSolver{
 		client: fake.NewClientset(secret),
 		newRepo: func(accountName string, privateKey []byte) (dnsRepository, error) {
 			if accountName != "myaccount" || string(privateKey) != "PEM" {
