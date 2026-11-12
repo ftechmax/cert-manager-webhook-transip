@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -187,10 +188,20 @@ func (s *transipSolver) loadCredentials(cfg solverConfig, namespace string) (acc
 var transipHTTPClient = &http.Client{Timeout: apiTimeout}
 
 func newTransipRepo(accountName string, privateKey []byte) (dnsRepository, error) {
+	var err error
+	tokenWhitelisted := false
+	if value := os.Getenv("TOKEN_WHITELISTED"); value != "" {
+		tokenWhitelisted, err = strconv.ParseBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid TOKEN_WHITELISTED: %w", err)
+		}
+	}
+
 	client, err := gotransip.NewClient(gotransip.ClientConfiguration{
 		AccountName:      accountName,
 		PrivateKeyReader: bytes.NewReader(privateKey),
 		HTTPClient:       transipHTTPClient,
+		TokenWhitelisted: tokenWhitelisted,
 	})
 	if err != nil {
 		return nil, err

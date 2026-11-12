@@ -7,12 +7,46 @@ import (
 	"testing"
 
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
+	"github.com/transip/gotransip/v6"
 	"github.com/transip/gotransip/v6/domain"
 	corev1 "k8s.io/api/core/v1"
 	extapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+func TestTokenWhitelisted(t *testing.T) {
+	for _, tt := range []struct {
+		name, value string
+		want        bool
+		wantErr     bool
+	}{
+		{name: "default"},
+		{name: "enabled", value: "true", want: true},
+		{name: "disabled", value: "false"},
+		{name: "invalid", value: "yes", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TOKEN_WHITELISTED", tt.value)
+			repo, err := newTransipRepo("myaccount", []byte("PEM"))
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "TOKEN_WHITELISTED") {
+					t.Fatalf("error = %v, want invalid TOKEN_WHITELISTED", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := repo.(*domain.Repository).Client.(interface {
+				GetConfig() gotransip.ClientConfiguration
+			})
+			if got := client.GetConfig().TokenWhitelisted; got != tt.want {
+				t.Errorf("TokenWhitelisted = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestSplitFQDN(t *testing.T) {
 	tests := []struct {
@@ -103,8 +137,9 @@ func TestLoadConfig(t *testing.T) {
 }
 
 type fakeRepo struct {
-	entries map[string][]domain.DNSEntry
-	failAdd bool
+	entries   map[string][]domain.DNSEntry
+	failAdd   bool
+	removeErr error
 }
 
 func (r *fakeRepo) GetDNSEntries(domainName string) ([]domain.DNSEntry, error) {
@@ -124,6 +159,9 @@ func (r *fakeRepo) AddDNSEntry(domainName string, entry domain.DNSEntry) error {
 }
 
 func (r *fakeRepo) RemoveDNSEntry(domainName string, entry domain.DNSEntry) error {
+	if r.removeErr != nil {
+		return r.removeErr
+	}
 	entries := r.entries[domainName]
 	for i, e := range entries {
 		if e == entry {
@@ -253,6 +291,55 @@ func TestCleanUpUsesStoredEntry(t *testing.T) {
 	}
 	if n := len(repo.entries["example.nl"]); n != 1 {
 		t.Errorf("expected only the original A record to remain, got %d entries", n)
+	}
+}
+
+func TestCleanUpRemoveError(t *testing.T) {
+	s, repo := newTestSolver(t, validSecretData)
+	repo.entries["example.nl"] = append(repo.entries["example.nl"], domain.DNSEntry{
+		Name: "_acme-challenge", Expire: 300, Type: "TXT", Content: "key",
+	})
+	repo.removeErr = errors.New("transip unavailable")
+
+	err := s.CleanUp(newChallenge("key", defaultTestConfig))
+	if !errors.Is(err, repo.removeErr) {
+		t.Fatalf("CleanUp error = %v, want %v", err, repo.removeErr)
+	}
+	assertKeys(t, repo, "key")
+
+	repo.removeErr = nil
+	if err := s.CleanUp(newChallenge("key", defaultTestConfig)); err != nil {
+		t.Fatalf("CleanUp retry: %v", err)
+	}
+	assertKeys(t, repo)
+}
+
+func TestCleanUpListError(t *testing.T) {
+	s, repo := newTestSolver(t, validSecretData)
+	delete(repo.entries, "example.nl")
+
+	err := s.CleanUp(newChallenge("key", defaultTestConfig))
+	if err == nil || !strings.Contains(err.Error(), "listing dns entries for example.nl") {
+		t.Fatalf("CleanUp error = %v, want listing error", err)
+	}
+}
+
+func TestClientCreationError(t *testing.T) {
+	s, _ := newTestSolver(t, validSecretData)
+	wantErr := errors.New("invalid credentials")
+	s.newRepo = func(string, []byte) (dnsRepository, error) {
+		return nil, wantErr
+	}
+
+	for name, solve := range map[string]func(*v1alpha1.ChallengeRequest) error{
+		"Present": s.Present,
+		"CleanUp": s.CleanUp,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := solve(newChallenge("key", defaultTestConfig)); !errors.Is(err, wantErr) {
+				t.Fatalf("error = %v, want %v", err, wantErr)
+			}
+		})
 	}
 }
 

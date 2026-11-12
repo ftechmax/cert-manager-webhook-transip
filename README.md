@@ -4,11 +4,11 @@ A [cert-manager](https://cert-manager.io/) DNS01 webhook solver for issuing Let'
 
 ## Install
 
-Requires Kubernetes with cert-manager installed and a TransIP account with API access enabled.
+Requires Kubernetes with cert-manager installed in `cert-manager`, `kubectl` with Kustomize support, and a TransIP account with API access enabled.
 
 ### 1. Create credentials
 
-Generate an API key pair in the [TransIP control panel](https://www.transip.nl/cp/account/api/) with **"Only accept IP addresses from the whitelist" turned off**. The webhook requests tokens usable from any IP; whitelisted keys reject these requests.
+Generate an API key pair in the [TransIP control panel](https://www.transip.nl/cp/account/api/).
 
 ```bash
 kubectl -n cert-manager create secret generic transip-credentials \
@@ -16,23 +16,29 @@ kubectl -n cert-manager create secret generic transip-credentials \
   --from-literal=accountName=your-transip-username
 ```
 
-If you rename the secret, update `resourceNames` in [secret-rbac.yaml](deploy/base/secret-rbac.yaml) and the solver's `privateKeySecretRef.name` in [clusterissuer.yaml](deploy/base/clusterissuer.yaml).
-
 ### 2. Configure
 
-Set `email` (Let's Encrypt contact) and `image` (full container image reference) in `deploy/overlays/local/settings.yaml`.
+For production, create your settings file:
 
-For production, copy `deploy/overlays/production/settings.example.yaml` to `settings.yaml` in the same directory and edit it. Production settings are git-ignored.
+```bash
+cp deploy/overlays/production/settings.example.yaml deploy/overlays/production/settings.yaml
+```
+
+Set `email` to your Let's Encrypt contact address and `image` to the full image reference from [GHCR](https://github.com/ftechmax/cert-manager-webhook-transip/pkgs/container/cert-manager-webhook-transip).
+
+For local development, edit `deploy/overlays/local/settings.yaml` instead.
+
+Set `TOKEN_WHITELISTED=true` on the webhook container to request IP-restricted tokens (default: `false`). See [TransIP authentication](https://api.transip.eu/rest/docs.html#header-authentication).
 
 ### 3. Deploy
 
 ```bash
-kubectl apply -k deploy/overlays/local
-# Or:
 kubectl apply -k deploy/overlays/production
+kubectl -n cert-manager rollout status deployment/transip-webhook --timeout=120s
+kubectl wait --for=condition=Available apiservice/v1alpha1.acme.ftechmax.net --timeout=120s
 ```
 
-This creates two ClusterIssuers: `letsencrypt-transip-staging` and `letsencrypt-transip-production`.
+Use `deploy/overlays/local` for a local deployment. Both overlays create two ClusterIssuers: `letsencrypt-transip-staging` and `letsencrypt-transip-production`.
 
 ## Usage
 
@@ -72,3 +78,5 @@ Options in the webhook solver's `config` block in [clusterissuer.yaml](deploy/ba
 | `ttl` | `300` | TXT record TTL in seconds; minimum 60 |
 
 ClusterIssuers use credentials in `cert-manager`. Namespaced Issuers need credentials in their own namespace and a Role and RoleBinding granting the webhook `get` on that secret.
+
+Licensed under [MIT](LICENSE).
