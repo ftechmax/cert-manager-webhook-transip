@@ -1,4 +1,4 @@
-FROM golang:1.27.3-alpine AS build_deps
+FROM golang:1.27.4-alpine AS build_deps
 WORKDIR /workspace
 COPY go.mod go.sum ./
 RUN go mod download
