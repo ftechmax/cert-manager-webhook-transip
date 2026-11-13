@@ -1,8 +1,11 @@
-[
+{
+  "overlays_dir": "deploy/overlays/",
+  "services": [
     {
-        "name": "cert-manager-webhook-transip",
-        "path": ".",
-        "dockerfile": ".",
-        "context": "."
+      "name": "cert-manager-webhook-transip",
+      "path": ".",
+      "dockerfile": ".",
+      "context": "."
     }
-]
+  ]
+}
