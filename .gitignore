@@ -27,4 +27,3 @@ go.work.sum
 
 # Deployment-specific settings and test credentials
 deploy/overlays/production/settings.yaml
-testdata/transip/secret.yaml
