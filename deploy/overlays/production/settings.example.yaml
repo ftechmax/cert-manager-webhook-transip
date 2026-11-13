@@ -7,4 +7,4 @@ metadata:
     config.kubernetes.io/local-config: "true"
 data:
   email: you@example.com
-  image: registry.example.com/cert-manager-webhook-transip:v1.0.0
+  image: ghcr.io/ftechmax/cert-manager-webhook-transip:0.1.0
