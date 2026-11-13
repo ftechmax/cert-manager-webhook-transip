@@ -241,6 +241,10 @@ func splitFQDN(fqdn, zone string) (domainName, recordName string, err error) {
 	domainName = strings.ToLower(strings.TrimSuffix(zone, "."))
 	fqdn = strings.ToLower(strings.TrimSuffix(fqdn, "."))
 
+	if domainName != "" && fqdn == domainName {
+		return domainName, "@", nil
+	}
+
 	recordName, ok := strings.CutSuffix(fqdn, "."+domainName)
 	if !ok || domainName == "" || recordName == "" {
 		return "", "", fmt.Errorf("fqdn %q is not a name inside zone %q", fqdn, zone)

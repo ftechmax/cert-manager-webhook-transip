@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -60,8 +61,14 @@ func TestSplitFQDN(t *testing.T) {
 		{fqdn: "_acme-challenge.Example.NL.", zone: "example.nl.", wantDomain: "example.nl", wantName: "_acme-challenge"},
 		{fqdn: "_acme-challenge.other.nl.", zone: "example.nl.", wantErr: true},
 		{fqdn: "_acme-challenge.notexample.nl.", zone: "example.nl.", wantErr: true},
-		{fqdn: "example.nl.", zone: "example.nl.", wantErr: true},
+		{fqdn: "example.nl.", zone: "example.nl.", wantDomain: "example.nl", wantName: "@"},
+		{fqdn: "example.nl", zone: "example.nl", wantDomain: "example.nl", wantName: "@"},
+		{fqdn: "Example.NL.", zone: "example.nl", wantDomain: "example.nl", wantName: "@"},
+		{fqdn: "example.nl", zone: "Example.NL.", wantDomain: "example.nl", wantName: "@"},
 		{fqdn: "_acme-challenge.example.nl.", zone: "", wantErr: true},
+		{fqdn: "", zone: "example.nl.", wantErr: true},
+		{fqdn: "", zone: "", wantErr: true},
+		{fqdn: ".", zone: ".", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.fqdn+" in "+tt.zone, func(t *testing.T) {
@@ -265,6 +272,40 @@ func assertKeys(t *testing.T, repo *fakeRepo, want ...string) {
 	got := repo.txtRecords("example.nl", "_acme-challenge")
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("TXT records = %v, want %v", got, want)
+	}
+}
+
+func TestPresentAndCleanUpAtZoneApex(t *testing.T) {
+	s, repo := newTestSolver(t, validSecretData)
+	repo.entries["example.nl"] = append(repo.entries["example.nl"],
+		domain.DNSEntry{Name: "@", Expire: 3600, Type: "A", Content: "192.0.2.2"},
+		domain.DNSEntry{Name: "@", Expire: 600, Type: "TXT", Content: "other-challenge"},
+		domain.DNSEntry{Name: "_acme-challenge", Expire: 300, Type: "TXT", Content: "key-apex"},
+	)
+	original := slices.Clone(repo.entries["example.nl"])
+	entry := domain.DNSEntry{Name: "@", Expire: 300, Type: "TXT", Content: "key-apex"}
+	presented := append(slices.Clone(original), entry)
+	ch := newChallenge("key-apex", defaultTestConfig)
+	ch.ResolvedFQDN, ch.ResolvedZone = "Example.NL", "example.nl."
+
+	for _, step := range []struct {
+		name  string
+		solve func(*v1alpha1.ChallengeRequest) error
+		want  []domain.DNSEntry
+	}{
+		{name: "present", solve: s.Present, want: presented},
+		{name: "present again", solve: s.Present, want: presented},
+		{name: "clean up", solve: s.CleanUp, want: original},
+		{name: "clean up again", solve: s.CleanUp, want: original},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			if err := step.solve(ch); err != nil {
+				t.Fatal(err)
+			}
+			if got := repo.entries["example.nl"]; !slices.Equal(got, step.want) {
+				t.Fatalf("DNS entries = %+v, want %+v", got, step.want)
+			}
+		})
 	}
 }
 
